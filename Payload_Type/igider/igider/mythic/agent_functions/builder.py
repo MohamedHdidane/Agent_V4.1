@@ -513,83 +513,96 @@ def check_environment():
             elif output_format == "executable":
                 await self.update_build_step("Finalizing Payload", "Building standalone executable...")
                 
-                # Create temp directory for PyInstaller
-                with tempfile.TemporaryDirectory() as tmp_dir:
-                    # 1. Save the Python payload to a file
-                    py_path = os.path.join(tmp_dir, "payload.py")
-                    with open(py_path, "w") as f:
-                        f.write(base_code)
-                    
-                    # 2. Prepare PyInstaller command
-                    pyinstaller_cmd = [
-                        "pyinstaller",
-                        "--clean",
-                        "--noconfirm",
-                        "--log-level=ERROR"
-                    ]
-                    
-                    # Add OS-specific options
-                    if self.selected_os == SupportedOS.Windows:
-                        pyinstaller_cmd.append("--icon=NONE")
-                        if self.get_parameter("executable_console") == "False":
-                            pyinstaller_cmd.append("--noconsole")
-                        file_extension = "exe"
-                    else:
-                        file_extension = "bin"
-                    
-                    # Add format option
-                    if self.get_parameter("executable_type") == "onefile":
-                        pyinstaller_cmd.append("--onefile")
-                    else:
-                        pyinstaller_cmd.append("--onedir")
-                    
-                    # Finalize command
-                    pyinstaller_cmd.extend([
-                        py_path,
-                        "--distpath", tmp_dir,
-                        "--workpath", os.path.join(tmp_dir, "build"),
-                        "--specpath", tmp_dir
-                    ])
-                    
-                    # 3. Run PyInstaller
-                    try:
-                        proc = await asyncio.create_subprocess_exec(
-                            *pyinstaller_cmd,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        stdout, stderr = await proc.communicate()
+                try:
+                    # Create temp directory for PyInstaller
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        # 1. Save the Python payload to a file
+                        py_path = os.path.join(tmp_dir, "payload.py")
+                        with open(py_path, "w", encoding="utf-8") as f:
+                            f.write(base_code)
                         
-                        if proc.returncode != 0:
-                            raise Exception(f"PyInstaller failed: {stderr.decode()}")
+                        # 2. Prepare PyInstaller command with explicit naming
+                        pyinstaller_cmd = [
+                            "pyinstaller",
+                            "--name=payload",  # Explicit output name
+                            "--clean",
+                            "--noconfirm",
+                            "--log-level=ERROR",
+                            "--distpath", os.path.join(tmp_dir, "dist"),
+                            "--workpath", os.path.join(tmp_dir, "build"),
+                            "--specpath", tmp_dir
+                        ]
                         
-                        # 4. Find the generated executable
+                        # Add OS-specific options
+                        if self.selected_os == SupportedOS.Windows:
+                            pyinstaller_cmd.extend(["--icon=NONE"])
+                            if self.get_parameter("executable_console") == "False":
+                                pyinstaller_cmd.append("--noconsole")
+                        
+                        # Add format selection
                         if self.get_parameter("executable_type") == "onefile":
-                            exec_path = os.path.join(tmp_dir, "dist", "payload")
+                            pyinstaller_cmd.append("--onefile")
                         else:
-                            exec_path = os.path.join(tmp_dir, "dist", "payload", "payload")
+                            pyinstaller_cmd.append("--onedir")
                         
-                        # Add OS-specific extension
-                        if self.selected_os == SupportedOS.Windows:
-                            exec_path += ".exe"
+                        pyinstaller_cmd.append(py_path)
                         
-                        if not os.path.exists(exec_path):
-                            raise Exception("Executable not found after build")
-                        
-                        # 5. Read the executable into memory
-                        with open(exec_path, "rb") as f:
-                            resp.payload = f.read()
-                        
-                        # Set appropriate file extension
-                        if self.selected_os == SupportedOS.Windows:
-                            resp.filename = "payload.exe"
-                        else:
-                            resp.filename = "payload.bin"
+                        # 3. Run PyInstaller with timeout
+                        try:
+                            self.logger.debug(f"Executing PyInstaller command: {' '.join(pyinstaller_cmd)}")
+                            proc = await asyncio.create_subprocess_exec(
+                                *pyinstaller_cmd,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE
+                            )
                             
-                        resp.build_message = "Successfully built standalone executable"
-                        
-                    except Exception as e:
-                        raise Exception(f"PyInstaller execution failed: {str(e)}")
+                            # Wait with timeout (300 seconds = 5 minutes)
+                            try:
+                                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+                                if proc.returncode != 0:
+                                    error_msg = stderr.decode().strip() or stdout.decode().strip()
+                                    raise Exception(f"PyInstaller failed with code {proc.returncode}: {error_msg}")
+                            except asyncio.TimeoutError:
+                                proc.kill()
+                                raise Exception("PyInstaller timed out after 5 minutes")
+                            
+                            # 4. Locate the executable with precise path resolution
+                            base_name = "payload"
+                            if self.get_parameter("executable_type") == "onefile":
+                                exec_path = os.path.join(tmp_dir, "dist", base_name)
+                            else:
+                                exec_path = os.path.join(tmp_dir, "dist", base_name, base_name)
+                            
+                            # Handle OS-specific extensions
+                            if self.selected_os == SupportedOS.Windows:
+                                exec_path += ".exe"
+                                resp.filename = f"{base_name}.exe"
+                            else:
+                                resp.filename = base_name
+                            
+                            # 5. Verify and read executable
+                            if not os.path.exists(exec_path):
+                                available_files = []
+                                for root, _, files in os.walk(tmp_dir):
+                                    for file in files:
+                                        available_files.append(os.path.relpath(os.path.join(root, file), tmp_dir))
+                                raise Exception(
+                                    f"Executable not found at {exec_path}\n"
+                                    f"Directory contents:\n{json.dumps(available_files, indent=2)}"
+                                )
+                            
+                            with open(exec_path, "rb") as f:
+                                resp.payload = f.read()
+                            
+                            resp.build_message = f"Successfully built {self.get_parameter('executable_type')} executable"
+                            self.logger.info(f"Executable created at {exec_path} ({len(resp.payload)} bytes)")
+                            
+                        except Exception as e:
+                            raise Exception(f"PyInstaller execution failed: {str(e)}") from e
+                            
+                except Exception as e:
+                    self.logger.error(f"Executable build failed: {str(e)}", exc_info=True)
+                    raise Exception(f"Failed to build executable: {str(e)}") from e
             else:  # default to py
                 resp.payload = base_code.encode()
                 resp.build_message = "Successfully built Python script payload"
