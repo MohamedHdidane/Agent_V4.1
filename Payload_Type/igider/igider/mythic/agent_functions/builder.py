@@ -13,6 +13,7 @@ from itertools import cycle
 import datetime
 import ssl
 import shutil
+import platform
 from mythic_container.PayloadBuilder import *
 from mythic_container.MythicCommandBase import *
 from mythic_container.MythicRPC import *
@@ -369,6 +370,24 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
         try:
             await self.update_build_step("Initializing Build", "Starting build process...")
             
+            # Verify build environment for Windows executables
+            if self.selected_os == SupportedOS.Windows and platform.system().lower() != "windows":
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "wine", "--version",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout, stderr = await proc.communicate()
+                    if proc.returncode != 0:
+                        raise Exception("Wine is required for cross-compiling Windows executables on non-Windows hosts")
+                except Exception as e:
+                    self.logger.error(f"Build environment check failed: {str(e)}")
+                    await self.update_build_step("Initializing Build", f"Build environment check failed: {str(e)}", False)
+                    resp.set_status(BuildStatus.Error)
+                    resp.build_stderr = f"Build environment check failed: {str(e)}"
+                    return resp
+            
             await self.update_build_step("Gathering Components", "Loading agent modules...")
             
             base_agent_path = self.get_file_path(os.path.join(self.agent_code_path, "base_agent"), "base_agent")
@@ -509,6 +528,8 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                         pyinstaller_cmd.extend(["--icon=NONE"])
                         if self.get_parameter("executable_console") == "False":
                             pyinstaller_cmd.append("--noconsole")
+                        # Ensure .exe extension for Windows builds
+                        pyinstaller_cmd.append(f"--name=payload.exe")
                     build_mode = self.get_parameter("executable_type")
                     if build_mode == "onefile":
                         pyinstaller_cmd.append("--onefile")
@@ -557,7 +578,9 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                     executable_path = None
                     for root, _, files in os.walk(dist_dir):
                         for file in files:
-                            if file.endswith("payload.exe") if self.selected_os == SupportedOS.Windows else file == "payload":
+                            # Accept both 'payload' and 'payload.exe' for Windows builds
+                            if (self.selected_os == SupportedOS.Windows and (file == "payload" or file.endswith("payload.exe"))) or \
+                               (self.selected_os != SupportedOS.Windows and file == "payload"):
                                 executable_path = os.path.join(root, file)
                                 if os.path.isfile(executable_path):
                                     os.chmod(executable_path, 0o755)
@@ -569,6 +592,12 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                                         resp.set_status(BuildStatus.Error)
                                         resp.build_stderr = f"Executable {executable_path} is empty"
                                         return resp
+                                    # Rename 'payload' to 'payload.exe' for Windows if necessary
+                                    if self.selected_os == SupportedOS.Windows and file == "payload":
+                                        new_path = os.path.join(root, "payload.exe")
+                                        os.rename(executable_path, new_path)
+                                        executable_path = new_path
+                                        self.logger.info(f"Renamed {file} to payload.exe for Windows")
                                     with open(executable_path, "rb") as f:
                                         resp.payload = f.read()
                                     resp.filename = f"payload{file_ext}"
