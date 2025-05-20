@@ -15,6 +15,10 @@ RUN apt-get update && apt-get install -y \
     && mv upx-4.2.1-amd64_linux/upx /usr/local/bin/ \
     && rm -rf upx-4.2.1* \
     && rm -rf /var/lib/apt/lists/*
+
+RUN dpkg --add-architecture i386 && \
+    apt-get update && \
+    apt-get install -y wine wine32:i386
 # Install Windows cross-compilation tools if TARGETOS is windows
 ARG TARGETOS
 RUN if [ "$TARGETOS" = "windows" ]; then \

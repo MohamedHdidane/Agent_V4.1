@@ -374,6 +374,7 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
             if self.selected_os == SupportedOS.Windows and platform.system().lower() != "windows":
                 if os.getenv("MYTHIC_IGNORE_WINE_CHECK") != "true":
                     try:
+                        # Check wine command
                         proc = await asyncio.create_subprocess_exec(
                             "wine", "--version",
                             stdout=asyncio.subprocess.PIPE,
@@ -387,7 +388,24 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                                 "If running on a host, install Wine using 'sudo apt-get install wine' (Ubuntu/Debian) or equivalent for your OS."
                             )
                             raise Exception(error_msg)
-                        self.logger.info(f"Wine version: {stdout.decode().strip()}")
+                        wine_version = stdout.decode().strip()
+                        self.logger.info(f"Wine version: {wine_version}")
+                        
+                        # Check wine32 availability
+                        proc = await asyncio.create_subprocess_exec(
+                            "wine", "winepath", "-w", "/tmp",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        stdout, stderr = await proc.communicate()
+                        if proc.returncode != 0 or "wine32 is missing" in stderr.decode():
+                            error_msg = (
+                                "wine32 is required for cross-compiling 32-bit Windows executables. "
+                                "If running Mythic in Docker, add 'RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y wine wine32:i386' to the payload Dockerfile and rebuild with './mythic-cli rebuild'. "
+                                "If running on a host, run 'sudo dpkg --add-architecture i386 && sudo apt-get update && sudo apt-get install wine32:i386'."
+                            )
+                            raise Exception(error_msg)
+                        self.logger.info("wine32 check passed")
                     except Exception as e:
                         self.logger.error(f"Build environment check failed: {str(e)}")
                         await self.update_build_step("Initializing Build", f"Build environment check failed: {str(e)}", False)
