@@ -446,6 +446,7 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
             await self.update_build_step("Finalizing Payload", "Preparing output in requested format...")
             
             output_format = self.get_parameter("output")
+            file_ext = ".exe" if self.selected_os == SupportedOS.Windows else ""
             if output_format == "base64":
                 resp.payload = base64.b64encode(base_code.encode())
                 resp.filename = "payload.b64"
@@ -487,7 +488,11 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                                 self.logger.error(f"Obfuscated code validation failed: {stderr.decode()}")
                                 raise Exception(f"Obfuscated code is invalid: {stderr.decode()}")
                         except Exception as e:
-                            raise Exception(f"Obfuscation validation failed: {str(e)}")
+                            self.logger.error(f"Obfuscation validation failed: {str(e)}")
+                            await self.update_build_step("Finalizing Payload", f"Obfuscation validation failed: {str(e)}", False)
+                            resp.set_status(BuildStatus.Error)
+                            resp.build_stderr = f"Obfuscation validation failed: {str(e)}"
+                            return resp
                     
                     pyinstaller_cmd = [
                         "python3", "-m", "PyInstaller",
@@ -500,7 +505,6 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                         "--specpath", tmp_dir
                     ]
                     
-                    file_ext = ".exe" if self.selected_os == SupportedOS.Windows else ""
                     if self.selected_os == SupportedOS.Windows:
                         pyinstaller_cmd.extend(["--icon=NONE"])
                         if self.get_parameter("executable_console") == "False":
@@ -527,27 +531,44 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                     self.logger.debug(f"PyInstaller stderr: {stderr_text}")
                     
                     if proc.returncode != 0:
-                        raise Exception(f"PyInstaller failed: {stderr_text or stdout_text}")
+                        self.logger.error(f"PyInstaller failed: {stderr_text or stdout_text}")
+                        await self.update_build_step("Finalizing Payload", f"PyInstaller failed: {stderr_text or stdout_text}", False)
+                        resp.set_status(BuildStatus.Error)
+                        resp.build_stderr = f"PyInstaller failed: {stderr_text or stdout_text}"
+                        return resp
                     
                     dist_dir = os.path.join(tmp_dir, "dist")
                     if not os.path.exists(dist_dir):
-                        raise Exception(f"dist directory not created: {dist_dir}")
+                        self.logger.error(f"dist directory not created: {dist_dir}")
+                        await self.update_build_step("Finalizing Payload", f"dist directory not created: {dist_dir}", False)
+                        resp.set_status(BuildStatus.Error)
+                        resp.build_stderr = f"dist directory not created: {dist_dir}"
+                        return resp
+                    
                     dir_contents = os.listdir(dist_dir)
                     if not dir_contents:
-                        raise Exception(f"dist directory is empty: {dist_dir}")
+                        self.logger.error(f"dist directory is empty: {dist_dir}")
+                        await self.update_build_step("Finalizing Payload", f"dist directory is empty: {dist_dir}", False)
+                        resp.set_status(BuildStatus.Error)
+                        resp.build_stderr = f"dist directory is empty: {dist_dir}"
+                        return resp
                     
                     executable_found = False
                     executable_path = None
                     for root, _, files in os.walk(dist_dir):
                         for file in files:
-                            if file == "payload" or file == "payload.exe":
+                            if file.endswith("payload.exe") if self.selected_os == SupportedOS.Windows else file == "payload":
                                 executable_path = os.path.join(root, file)
                                 if os.path.isfile(executable_path):
                                     os.chmod(executable_path, 0o755)
                                     file_stat = os.stat(executable_path)
                                     self.logger.info(f"Found executable: {executable_path}, size: {file_stat.st_size}, permissions: {oct(file_stat.st_mode)[-3:]}")
                                     if file_stat.st_size == 0:
-                                        raise Exception(f"Executable {executable_path} is empty")
+                                        self.logger.error(f"Executable {executable_path} is empty")
+                                        await self.update_build_step("Finalizing Payload", f"Executable {executable_path} is empty", False)
+                                        resp.set_status(BuildStatus.Error)
+                                        resp.build_stderr = f"Executable {executable_path} is empty"
+                                        return resp
                                     with open(executable_path, "rb") as f:
                                         resp.payload = f.read()
                                     resp.filename = f"payload{file_ext}"
@@ -571,7 +592,10 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                             ]
                             detailed_dir_structure[rel_path] = {"dirs": dirs, "files": file_info}
                         self.logger.error(f"Detailed directory structure: {json.dumps(detailed_dir_structure, indent=2)}")
-                        raise Exception(f"Failed to find executable in {dist_dir}. Contents: {dir_contents}")
+                        await self.update_build_step("Finalizing Payload", f"Failed to find executable in {dist_dir}. Contents: {dir_contents}", False)
+                        resp.set_status(BuildStatus.Error)
+                        resp.build_stderr = f"Failed to find executable in {dist_dir}. Contents: {dir_contents}"
+                        return resp
                     
                 except Exception as e:
                     self.logger.error(f"Executable build failed: {str(e)}", exc_info=True)
@@ -583,14 +607,16 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                     shutil.rmtree(tmp_dir, ignore_errors=True)
             
             else:
-                resp.payload = base_code.encode()
-                resp.filename = "payload.py"
-                resp.build_message = "Successfully built Python script payload"
+                self.logger.error(f"Invalid output format: {output_format}")
+                await self.update_build_step("Finalizing Payload", f"Invalid output format: {output_format}", False)
+                resp.set_status(BuildStatus.Error)
+                resp.build_stderr = f"Invalid output format: {output_format}"
+                return resp
             
             if build_errors:
                 resp.build_stderr = "Warnings during build:\n" + "\n".join(build_errors)
             
-            await self.update_build_step("Finalizing Payload", "Payload ready for download", True)
+            await self.update_build_step("Finalizing Payload", f"Payload ready for download as {resp.filename}", True)
             
         except Exception as e:
             self.logger.error(f"Build failed: {str(e)}")
