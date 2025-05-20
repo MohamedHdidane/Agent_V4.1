@@ -34,7 +34,9 @@ RUN pip install --no-cache-dir \
     pyarmor==8.3.6 \
     cryptography==42.0.5 \
     pycryptodome==3.20.0 \
-    zstandard==0.22.0
+    zstandard==0.22.0 \
+    mythic-container
+
 
 # Set working directory
 WORKDIR /Mythic/
