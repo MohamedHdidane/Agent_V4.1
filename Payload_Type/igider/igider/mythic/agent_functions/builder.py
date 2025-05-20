@@ -368,30 +368,35 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
         build_errors = []
         
         try:
-            await self.update_build_step("Initializing Build", "Starting build process...")
+            await self.update_build_step("Initializing Build", f"Starting build process on {platform.system()}...")
             
             # Verify build environment for Windows executables
             if self.selected_os == SupportedOS.Windows and platform.system().lower() != "windows":
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        "wine", "--version",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    stdout, stderr = await proc.communicate()
-                    if proc.returncode != 0:
-                        error_msg = (
-                            "Wine is required for cross-compiling Windows executables on non-Windows hosts. "
-                            "Install Wine using 'sudo apt-get install wine' (Ubuntu/Debian) or equivalent for your OS."
+                if os.getenv("MYTHIC_IGNORE_WINE_CHECK") != "true":
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            "wine", "--version",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
                         )
-                        raise Exception(error_msg)
-                    self.logger.info(f"Wine version: {stdout.decode().strip()}")
-                except Exception as e:
-                    self.logger.error(f"Build environment check failed: {str(e)}")
-                    await self.update_build_step("Initializing Build", f"Build environment check failed: {str(e)}", False)
-                    resp.set_status(BuildStatus.Error)
-                    resp.build_stderr = f"Build environment check failed: {str(e)}"
-                    return resp
+                        stdout, stderr = await proc.communicate()
+                        if proc.returncode != 0:
+                            error_msg = (
+                                "Wine is required for cross-compiling Windows executables on non-Windows hosts. "
+                                "If running Mythic in Docker, add 'RUN apt-get update && apt-get install -y wine' to the payload Dockerfile and rebuild with './mythic-cli rebuild'. "
+                                "If running on a host, install Wine using 'sudo apt-get install wine' (Ubuntu/Debian) or equivalent for your OS."
+                            )
+                            raise Exception(error_msg)
+                        self.logger.info(f"Wine version: {stdout.decode().strip()}")
+                    except Exception as e:
+                        self.logger.error(f"Build environment check failed: {str(e)}")
+                        await self.update_build_step("Initializing Build", f"Build environment check failed: {str(e)}", False)
+                        resp.set_status(BuildStatus.Error)
+                        resp.build_stderr = f"Build environment check failed: {str(e)}"
+                        return resp
+                else:
+                    self.logger.warning("Wine check bypassed with MYTHIC_IGNORE_WINE_CHECK=true. Windows executable may not build correctly.")
+                    await self.update_build_step("Initializing Build", "Warning: Wine check bypassed. Build may fail.", True)
             
             await self.update_build_step("Gathering Components", "Loading agent modules...")
             
