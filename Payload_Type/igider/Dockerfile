@@ -6,12 +6,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    upx \
     build-essential \
     zlib1g-dev \
     patchelf \
+    curl \
+    && curl -LO https://github.com/upx/upx/releases/download/v4.2.1/upx-4.2.1-amd64_linux.tar.xz \
+    && tar -xf upx-4.2.1-amd64_linux.tar.xz \
+    && mv upx-4.2.1-amd64_linux/upx /usr/local/bin/ \
+    && rm -rf upx-4.2.1* \
     && rm -rf /var/lib/apt/lists/*
-
 # Install Windows cross-compilation tools if TARGETOS is windows
 ARG TARGETOS
 RUN if [ "$TARGETOS" = "windows" ]; then \
