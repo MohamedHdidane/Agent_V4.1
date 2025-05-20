@@ -380,7 +380,12 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                     )
                     stdout, stderr = await proc.communicate()
                     if proc.returncode != 0:
-                        raise Exception("Wine is required for cross-compiling Windows executables on non-Windows hosts")
+                        error_msg = (
+                            "Wine is required for cross-compiling Windows executables on non-Windows hosts. "
+                            "Install Wine using 'sudo apt-get install wine' (Ubuntu/Debian) or equivalent for your OS."
+                        )
+                        raise Exception(error_msg)
+                    self.logger.info(f"Wine version: {stdout.decode().strip()}")
                 except Exception as e:
                     self.logger.error(f"Build environment check failed: {str(e)}")
                     await self.update_build_step("Initializing Build", f"Build environment check failed: {str(e)}", False)
@@ -528,7 +533,6 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                         pyinstaller_cmd.extend(["--icon=NONE"])
                         if self.get_parameter("executable_console") == "False":
                             pyinstaller_cmd.append("--noconsole")
-                        # Ensure .exe extension for Windows builds
                         pyinstaller_cmd.append(f"--name=payload.exe")
                     build_mode = self.get_parameter("executable_type")
                     if build_mode == "onefile":
@@ -578,7 +582,6 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                     executable_path = None
                     for root, _, files in os.walk(dist_dir):
                         for file in files:
-                            # Accept both 'payload' and 'payload.exe' for Windows builds
                             if (self.selected_os == SupportedOS.Windows and (file == "payload" or file.endswith("payload.exe"))) or \
                                (self.selected_os != SupportedOS.Windows and file == "payload"):
                                 executable_path = os.path.join(root, file)
@@ -592,7 +595,6 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                                         resp.set_status(BuildStatus.Error)
                                         resp.build_stderr = f"Executable {executable_path} is empty"
                                         return resp
-                                    # Rename 'payload' to 'payload.exe' for Windows if necessary
                                     if self.selected_os == SupportedOS.Windows and file == "payload":
                                         new_path = os.path.join(root, "payload.exe")
                                         os.rename(executable_path, new_path)
