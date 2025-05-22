@@ -6,11 +6,14 @@ WORKDIR /Mythic/
 RUN pip3 install pyinstaller
 
 # Install cross-compilation tools for Windows executables on Linux
-RUN apt-get update && apt-get install -y \
+RUN dpkg --add-architecture i386 && \
+    apt-get update && \
+    apt-get install -y \
     wine \
     wine32 \
     wine64 \
     && rm -rf /var/lib/apt/lists/*
+
 
 # Configure Wine for PyInstaller Windows builds
 RUN wine --version || true
