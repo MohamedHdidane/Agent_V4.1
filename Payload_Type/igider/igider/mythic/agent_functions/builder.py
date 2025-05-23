@@ -271,9 +271,6 @@ class Igider(PayloadType):
                 # Run PyInstaller with proper arguments
                 cmd = [
                     "pyinstaller", 
-                    "--onefile",  # Create single executable
-                    "--clean",    # Clean build
-                    "--noconfirm", # Don't ask for confirmation
                     spec_file
                 ]
                 
