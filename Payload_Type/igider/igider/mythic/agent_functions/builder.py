@@ -385,51 +385,27 @@ class Igider(PayloadType):
             await self.update_build_step("Finalizing Payload", "Preparing output in requested format...")
             
             output_format = self.get_parameter("output")
-            if output_format == "base64":
-                resp.payload = base64.b64encode(base_code.encode())
-                resp.build_message = "Successfully built payload in base64 format"
-            elif output_format == "py_compressed":
-                compressed_code = compress_code(base_code)
-                resp.payload = compressed_code.encode()
-                resp.build_message = "Successfully built compressed Python payload"
-            elif output_format == "one_liner":
-                one_liner = create_one_liner(base_code)
-                resp.payload = one_liner.encode()
-                resp.build_message = "Successfully built one-liner payload"
-            elif output_format == "exe_windows":
-                try:
-                    await self.update_build_step("Finalizing Payload", "Building Windows executable...")
-                    executable_data = await self._build_executable(base_code, "windows")
-                    resp.payload = executable_data
-                    resp.build_message = "Successfully built Windows executable"
-                except Exception as e:
-                    resp.set_status(BuildStatus.Error)
-                    resp.build_stderr = f"Failed to build Windows executable: {str(e)}"
-                    return resp
-            elif output_format == "elf_linux":
-                try:
-                    await self.update_build_step("Finalizing Payload", "Building Linux executable...")
-                    executable_data = await self._build_executable(base_code, "linux")
-                    resp.payload = executable_data
-                    resp.build_message = "Successfully built Linux executable"
-                except Exception as e:
-                    resp.set_status(BuildStatus.Error)
-                    resp.build_stderr = f"Failed to build Linux executable: {str(e)}"
-                    return resp
-            elif output_format == "powershell_reflective":
-                try:
-                    await self.update_build_step("Finalizing Payload", "Creating PowerShell reflective loader...")
-                    ps_loader = self._create_powershell_loader(base_code)
-                    resp.payload = ps_loader.encode()
-                    resp.build_message = "Successfully built PowerShell reflective loader"
-                except Exception as e:
-                    resp.set_status(BuildStatus.Error)
-                    resp.build_stderr = f"Failed to build PowerShell loader: {str(e)}"
-                    return resp
-            else:  # default to py
+            if output_format == "py":
+                # Just return the Python code
                 resp.payload = base_code.encode()
-                resp.build_message = "Successfully built Python script payload"
-            
+            elif output_format in ["exe_windows", "elf_linux"]:
+                # Combine all components into a single code string
+                final_code = base_code + "\n" + crypto_code + "\n" + command_code
+                target_os = "windows" if output_format == "exe_windows" else "linux"
+                exe_bytes = await self._build_executable(final_code, target_os)
+                resp.payload = exe_bytes
+            elif output_format == "base64":
+                final_code = base_code + "\n" + crypto_code + "\n" + command_code
+                resp.payload = base64.b64encode(final_code.encode())
+            elif output_format == "powershell_reflective":
+                final_code = base_code + "\n" + crypto_code + "\n" + command_code
+                ps_code = self._create_powershell_loader(final_code)
+                resp.payload = ps_code.encode()
+            # Add similar handling for 'py_compressed', 'one_liner', etc.
+            else:
+                resp.set_status(BuildStatus.Error)
+                resp.build_stderr = f"Unsupported output format: {output_format}"
+
             # Report any non-fatal errors
             if build_errors:
                 resp.build_stderr = "Warnings during build:\n" + "\n".join(build_errors)
