@@ -18,7 +18,10 @@ from typing import Dict, Any, List, Optional
 from itertools import cycle
 import datetime
 import textwrap
-
+import tempfile
+import subprocess
+import sys
+import shutil
 
 class Igider(PayloadType):
     name = "igider"
