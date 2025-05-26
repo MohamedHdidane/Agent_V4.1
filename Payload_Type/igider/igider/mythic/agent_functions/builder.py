@@ -190,13 +190,29 @@ class Igider(PayloadType):
         return powershell_loader
 
 
+
     def _create_pyinstaller_spec(self, target_os: str) -> str:
         """Generate PyInstaller spec file for executable creation."""
+
         exe_name = "svchost" if target_os == "windows" else "systemd-update"
         console_mode = "False" if target_os == "windows" else "True"
 
+        # List of modules that should be forcibly included
+        hidden_imports = [
+            'json',
+            'ssl',
+            'base64',
+            'threading',
+            'time',
+            'urllib.request',
+            'urllib.parse',
+        ]
+
+        hidden_imports_str = ", ".join(f"'{mod}'" for mod in hidden_imports)
+
+        # Conditional bootloader path
         bootloader_line = (
-            "bootloader='/usr/local/bin/pyinstaller_win64_loader.exe'"
+            "bootloader='/usr/local/bin/pyinstaller_win64_loader.exe',"
             if target_os == "windows" else ""
         )
 
@@ -209,7 +225,7 @@ class Igider(PayloadType):
                 pathex=[],
                 binaries=[],
                 datas=[],
-                hiddenimports=['urllib.request', 'urllib.parse', 'ssl', 'json', 'base64', 'threading', 'time'],
+                hiddenimports=[{hidden_imports_str}],
                 hookspath=[],
                 hooksconfig={{}},
                 runtime_hooks=[],
@@ -230,7 +246,8 @@ class Igider(PayloadType):
                 a.datas,
                 [],
                 name='{exe_name}',
-                debug=False,{bootloader_line}
+                debug=False,
+                {bootloader_line}
                 bootloader_ignore_signals=False,
                 strip=False,
                 upx=False,
@@ -243,7 +260,9 @@ class Igider(PayloadType):
                 entitlements_file=None
             )
         """)
+
         return spec_content
+
 
 
 
