@@ -28,7 +28,7 @@ def check_environment():
     except: pass
     return True
 
-if not check_environment():
-    import sys; sys.exit(0)
+#if not check_environment():
+#   import sys; sys.exit(0)
 """)
     return '\n'.join(evasion_code) + '\n' + code
